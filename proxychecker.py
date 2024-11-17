@@ -15,6 +15,7 @@ import logging
 import concurrent.futures
 from enum import Enum
 from collections.abc import Iterator
+import typing
 
 class ProxyType(Enum):
     HTTP = 1
@@ -58,6 +59,121 @@ def parse_file(file_path: str, proxy_type: ProxyType) -> Iterator[tuple[ProxyTyp
                         logger.warning(f"While processing file {file_path}, line {i+1}, an exception occured => {err}. Skipping line...")
     except Exception as exc:
         logger.warning(f"While opening file {file_path}, an exception occured => {exc}. Skipping file...")
+
+_ReturnValue = typing.TypeVar("_ReturnValue")
+
+# The following class was copied from the urllib3 project, which is licensed under the MIT License.
+# https://github.com/urllib3/urllib3/blob/main/LICENSE.txt
+class SSLTransport:
+    def __init__(
+        self,
+        socket: socket.socket,
+        ssl_context: ssl.SSLContext,
+        server_hostname: str | None = None,
+        suppress_ragged_eofs: bool = True,
+    ) -> None:
+        self.incoming = ssl.MemoryBIO()
+        self.outgoing = ssl.MemoryBIO()
+
+        self.suppress_ragged_eofs = suppress_ragged_eofs
+        self.socket = socket
+
+        self.sslobj = ssl_context.wrap_bio(
+            self.incoming, self.outgoing, server_hostname=server_hostname
+        )
+
+        self._ssl_io_loop(self.sslobj.do_handshake)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_: typing.Any) -> None:
+        self.close()
+
+    def recv(self, buflen: int = 1024, flags: int = 0) -> int | bytes:
+        if flags != 0:
+            raise ValueError("non-zero flags not allowed in calls to recv")
+        return self._wrap_ssl_read(buflen)
+
+    def sendall(self, data: bytes, flags: int = 0) -> None:
+        if flags != 0:
+            raise ValueError("non-zero flags not allowed in calls to sendall")
+        count = 0
+        with memoryview(data) as view, view.cast("B") as byte_view:
+            amount = len(byte_view)
+            while count < amount:
+                v = self.send(byte_view[count:])
+                count += v
+
+    def send(self, data: bytes, flags: int = 0) -> int:
+        if flags != 0:
+            raise ValueError("non-zero flags not allowed in calls to send")
+        return self._ssl_io_loop(self.sslobj.write, data)
+
+    def close(self) -> None:
+        self.socket.close()
+
+    def _wrap_ssl_read(self, len: int, buffer: bytearray | None = None) -> int | bytes:
+        try:
+            return self._ssl_io_loop(self.sslobj.read, len, buffer)
+        except ssl.SSLError as e:
+            if e.errno == ssl.SSL_ERROR_EOF and self.suppress_ragged_eofs:
+                return 0
+            else:
+                raise
+
+    @typing.overload
+    def _ssl_io_loop(self, func: typing.Callable[[], None]) -> None:
+        ...
+
+    @typing.overload
+    def _ssl_io_loop(self, func: typing.Callable[[bytes], int], arg1: bytes) -> int:
+        ...
+
+    @typing.overload
+    def _ssl_io_loop(
+        self,
+        func: typing.Callable[[int, bytearray | None], bytes],
+        arg1: int,
+        arg2: bytearray | None,
+    ) -> bytes:
+        ...
+
+    def _ssl_io_loop(
+        self,
+        func: typing.Callable[..., _ReturnValue],
+        arg1: None | bytes | int = None,
+        arg2: bytearray | None = None,
+    ) -> _ReturnValue:
+        should_loop = True
+        ret = None
+
+        while should_loop:
+            errno = None
+            try:
+                if arg1 is None and arg2 is None:
+                    ret = func()
+                elif arg2 is None:
+                    ret = func(arg1)
+                else:
+                    ret = func(arg1, arg2)
+            except ssl.SSLError as e:
+                if e.errno not in (ssl.SSL_ERROR_WANT_READ, ssl.SSL_ERROR_WANT_WRITE):
+                    raise e
+                errno = e.errno
+
+            buf = self.outgoing.read()
+            self.socket.sendall(buf)
+
+            if errno is None:
+                should_loop = False
+            elif errno == ssl.SSL_ERROR_WANT_READ:
+                buf = self.socket.recv(16384)
+                if buf:
+                    self.incoming.write(buf)
+                else:
+                    self.incoming.write_eof()
+        return typing.cast(_ReturnValue, ret)
 
 # ssl context with default settings (i.e. safe)
 ssl_context = ssl.create_default_context()
@@ -104,7 +220,7 @@ def check_proxy(proxy: tuple[ProxyType, str, int]) -> bool:
                         buff = ssock.recv(16384)
                         if not buff.startswith(b"HTTP/1.1 200"):
                             raise Exception("answer is not 200 ok")
-                        with ssl_context.wrap_socket(ssock, server_hostname=host2check['hostname']) as sssock:
+                        with SSLTransport(ssock, ssl_context, host2check['hostname']) as sssock:
                             sssock.sendall("GET / HTTP/1.1\r\nHost: {0}\r\nUser-Agent: {1}\r\nAccept: */*\r\n\r\n".format(host2check['hostname'], useragent).encode())
                             buff = sssock.recv(16384)
                             if not buff:
