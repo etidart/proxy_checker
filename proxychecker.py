@@ -31,10 +31,16 @@ PROTOCOLS = {
     ProxyType.SOCKS5: 'socks5'
 }
 
+def get_proto_by_str(value):
+    for key, val in PROTOCOLS.items():
+        if val == value:
+            return key
+    raise Exception("unknown protocol")
+
 def parse_line(line: str) -> tuple[ProxyType, str, int]:
     line = line.strip().split(':')
     line[1] = line[1].strip('//')
-    return (PROTOCOLS.keys()[PROTOCOLS.values().index(line[0])], line[1], int(line[2]))
+    return (get_proto_by_str(line[0]), line[1], int(line[2]))
 
 def delete_comments(line: str) -> str:
     index = line.find('#')
@@ -377,7 +383,7 @@ def main():
                 logger.warning(f"While processing {i} -P{protoarg[ptype]} arg, an exception occured => {err}. Skipping arg...")
 
     if args.blacklist:
-        for el in parse_file(args.blacklist, None):
+        for el in parse_file(args.blacklist[0], None):
             proxies_set.discard(el)
 
     if len(proxies_set) == 0:
