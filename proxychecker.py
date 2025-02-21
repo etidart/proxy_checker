@@ -15,6 +15,7 @@ import logging
 import concurrent.futures
 from enum import Enum
 from collections.abc import Iterator
+import threading
 import typing
 
 class ProxyType(Enum):
@@ -211,7 +212,7 @@ def check_proxy(proxy: tuple[ProxyType, str, int]) -> bool:
                         buff = ssock.recv(16384)
                         if not buff:
                             raise Exception("something is wrong in tls tunnel")
-                        logger.info(f"{proxy} is good")
+                        handleStatus(proxy, True)
                         return True
             case ProxyType.HTTPS:
                 with socket.create_connection((proxy[1], proxy[2])) as sock:
@@ -225,7 +226,7 @@ def check_proxy(proxy: tuple[ProxyType, str, int]) -> bool:
                             buff = sssock.recv(16384)
                             if not buff:
                                 raise Exception("something is wrong in tls tunnel")
-                            logger.info(f"{proxy} is good")
+                            handleStatus(proxy, True)
                             return True
             case ProxyType.SOCKS4:
                 with socket.create_connection((proxy[1], proxy[2])) as sock:
@@ -238,7 +239,7 @@ def check_proxy(proxy: tuple[ProxyType, str, int]) -> bool:
                         buff = ssock.recv(16384)
                         if not buff:
                             raise Exception("something is wrong in tls tunnel")
-                        logger.info(f"{proxy} is good")
+                        handleStatus(proxy, True)
                         return True
             case ProxyType.SOCKS5:
                 with socket.create_connection((proxy[1], proxy[2])) as sock:
@@ -255,11 +256,64 @@ def check_proxy(proxy: tuple[ProxyType, str, int]) -> bool:
                         buff = ssock.recv(16384)
                         if not buff:
                             raise Exception("something is wrong in tls tunnel")
-                        logger.info(f"{proxy} is good")
+                        handleStatus(proxy, True)
                         return True
     except Exception as exc:
-        logger.info(f"{proxy} is bad, reason => {exc}")
+        handleStatus(proxy, False, exc)
         return False
+
+
+fnames = {
+    'all': './good_proxy.txt',
+    ProxyType.HTTP: './good_http.txt',
+    ProxyType.HTTPS: './good_https.txt',
+    ProxyType.SOCKS4: './good_socks4.txt',
+    ProxyType.SOCKS5: './good_socks5.txt',
+    'bad': './bad_proxy.txt'
+}
+
+fds = {
+    'all': None,
+    ProxyType.HTTP: None,
+    ProxyType.HTTPS: None,
+    ProxyType.SOCKS4: None,
+    ProxyType.SOCKS5: None,
+    'bad': None
+}
+
+fdlocks = {
+    'all': threading.Lock(),
+    ProxyType.HTTP: threading.Lock(),
+    ProxyType.HTTPS: threading.Lock(),
+    ProxyType.SOCKS4: threading.Lock(),
+    ProxyType.SOCKS5: threading.Lock(),
+    'bad': threading.Lock()
+}
+
+def handleStatus(prox: tuple[ProxyType, str, int], good: bool, reason=""):
+    if good:
+        logger.info(PROTOCOLS[prox[0]] + '://' + prox[1] + ":" + str(prox[2]) + " is good")
+
+        # writing to all first
+        with fdlocks['all']:
+            if fds['all'] == None:
+                fds['all'] = open(fnames['all'], "a")
+            print(PROTOCOLS[prox[0]] + '://' + prox[1] + ":" + str(prox[2]), file=fds['all'])
+
+        # writing to proto file
+        with fdlocks[prox[0]]:
+            if fds[prox[0]] == None:
+                fds[prox[0]] = open(fnames[prox[0]], "a")
+            print(prox[1] + ":" + str(prox[2]), file=fds[prox[0]])
+    else:
+        logger.info(PROTOCOLS[prox[0]] + '://' + prox[1] + ":" + str(prox[2]) + f" is bad, reason => {reason}")
+
+        # writing to bad
+        with fdlocks['bad']:
+            if fds['bad'] == None:
+                fds['bad'] = open(fnames['bad'], "a")
+            print(PROTOCOLS[prox[0]] + '://' + prox[1] + ":" + str(prox[2]), file=fds['bad'])
+
 
 def main():
     parser = argparse.ArgumentParser(description='check proxies')
@@ -337,39 +391,6 @@ def main():
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
         results = list(executor.map(check_proxy, proxies_set))
-
-    fnames = {
-        'all': './good_proxy.txt',
-        ProxyType.HTTP: './good_http.txt',
-        ProxyType.HTTPS: './good_https.txt',
-        ProxyType.SOCKS4: './good_socks4.txt',
-        ProxyType.SOCKS5: './good_socks5.txt',
-        'bad': './bad_proxy.txt'
-    }
-
-    fds = {
-        'all': None,
-        ProxyType.HTTP: None,
-        ProxyType.HTTPS: None,
-        ProxyType.SOCKS4: None,
-        ProxyType.SOCKS5: None,
-        'bad': None
-    }
-
-    for prox, good in zip(proxies_set, results):
-        if good:
-            # writing to all first
-            if fds['all'] == None:
-                fds['all'] = open(fnames['all'], "a")
-            print(PROTOCOLS[prox[0]] + '://' + prox[1] + ":" + str(prox[2]), file=fds['all'])
-            # writing to proto file
-            if fds[prox[0]] == None:
-                fds[prox[0]] = open(fnames[prox[0]], "a")
-            print(prox[1] + ":" + str(prox[2]), file=fds[prox[0]])
-        else:
-            if fds['bad'] == None:
-                fds['bad'] = open(fnames['bad'], "a")
-            print(PROTOCOLS[prox[0]] + '://' + prox[1] + ":" + str(prox[2]), file=fds['bad'])
 
     for fd in fds.values():
         if fd != None: fd.close()
