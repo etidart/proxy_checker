@@ -281,6 +281,7 @@ def main():
     parser.add_argument('-b', '--blacklist', nargs=1, help='proxies from this list will not be checked')
 
     parser.add_argument('-t', '--threads', nargs=1, type=int, default=25)
+    parser.add_argument('-to', '--timeout', nargs=1, type=int, default=2)
 
     args = parser.parse_args()
 
@@ -329,9 +330,10 @@ def main():
         logger.critical("There are no proxies to be checked. Exiting...")
         exit(1)
 
-    socket.setdefaulttimeout(20)
+    socket.setdefaulttimeout(args.timeout)
 
     proxies_set = list(proxies_set)
+    logger.info(f"Total: {len(proxies_set)} proxies")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
         results = list(executor.map(check_proxy, proxies_set))
